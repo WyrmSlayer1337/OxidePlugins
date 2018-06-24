@@ -25,9 +25,8 @@ using Timer = Oxide.Plugins.Timer;
 
 namespace Oxide.Plugins
 {
-
-    [Info("Hunt RPG", "PedraozauM / SW / Nogrod", "1.5.13", ResourceId = 841)]
-    public class HuntPlugin : RustPlugin
+    [Info("Hunt RPG", "PedraozauM / SW / Nogrod / Default", "1.6.0", ResourceId = 841)]
+    public class HuntRPG : RustPlugin
     {
         [PluginReference]
         private Plugin Pets;
@@ -35,6 +34,12 @@ namespace Oxide.Plugins
         private Plugin EventManager;
         [PluginReference]
         Plugin PopupNotifications;
+        [PluginReference]
+        Plugin Economics;
+        [PluginReference]
+        Plugin MagazinBoost;
+        [PluginReference]
+        Plugin InstantCraft;
         private bool initialized;
         private bool updateConfig;
         private bool updatePlayerData;
@@ -67,9 +72,9 @@ namespace Oxide.Plugins
         private readonly int playersMask = LayerMask.GetMask("Player (Server)");
         private readonly int triggerMask = LayerMask.GetMask("Trigger");
 
-        public HuntPlugin()
+        public HuntRPG()
         {
-            DataVersion = new VersionNumber(0,9,3);
+            DataVersion = new VersionNumber(1, 0, 1);
 
             GUIInfo = new Dictionary<ulong, GUIInfo>();
             PlayerLastPercentChange = new Dictionary<ulong, float>();
@@ -149,54 +154,36 @@ namespace Oxide.Plugins
             timer.Once(1, () => GuiInit(player));
         }
 
-        object OnEntityTakeDamage(MonoBehaviour entity, HitInfo hitInfo)
+        void OnEntityTakeDamage(BasePlayer player, HitInfo hitInfo)
         {
-            var player = entity as BasePlayer;
-            if (player == null) return null;
-            if (!OnAttackedInternal(player, hitInfo)) return null;
-            hitInfo = new HitInfo();
-            return hitInfo;
+            if (player is NPCPlayer) return; 
+            if (!(player.userID >= 76560000000000000L || player.userID <= 0L)) return;
+            var rpgInfo = FindRpgInfo(player);
+            if (rpgInfo == null) return;
+            var victim = hitInfo.Initiator;
+            if (victim is BasePlayer)
+            {
+                
+                if (Random.Range(0f, 1f) <= rpgInfo.GetEvasion())
+                {
+                    ChatMessage(player, HMK.Dodged);
+                    if (!(victim is NPCPlayer))
+                    {
+                        ChatMessage(victim, HMK.TargetDodged); 
+                    }
+                    hitInfo.damageTypes.ScaleAll(0);
+                }
+            }
+            if (rpgInfo.GetBlock() <= 1 && rpgInfo.GetBlock() >= 0)
+            {
+                hitInfo.damageTypes.ScaleAll(1 - rpgInfo.GetBlock());
+            }
         }
 
-        object OnPlayerAttack(BasePlayer player, HitInfo hitInfo)
+
+        private void ChatMessage(BaseEntity victim, HMK targetDodged)
         {
-            if (player == null || hitInfo?.Weapon?.GetItem() == null || !player.CanBuild()) return null;
-            Skill skill;
-            if (SkillTable.TryGetValue(HRK.Blinkarrow, out skill) && !skill.Enabled)
-                return null;
-            if (!hitInfo.Weapon.GetOwnerItemDefinition().shortname.Equals("bow.hunting"))
-                return null;
-            var rpgInfo = FindRpgInfo(player);
-            int skillPoints;
-            if (!rpgInfo.Skills.TryGetValue(HRK.Blinkarrow, out skillPoints))
-            {
-                ChatMessage(player, HMK.NotLearnedSkill);
-                return null;
-            }
-            var playerCooldowns = PlayerCooldowns(player.userID);
-            float availableAt = 0;
-            var time = Time.realtimeSinceStartup;
-            var isReady = /*player.IsAdmin || */IsSkillReady(playerCooldowns, ref availableAt, time, HRK.Blinkarrow);
-            if (isReady)
-            {
-                if (rpgInfo.Preferences.AutoToggleBlinkArrow)
-                    rpgInfo.Preferences.UseBlinkArrow = true;
-                if (!rpgInfo.Preferences.UseBlinkArrow) return null;
-                var newPos = GetGround(hitInfo.HitPositionWorld);
-                if (!IsBuildingAllowed(newPos, player))
-                {
-                    ChatMessage(player, HMK.CantBlinkOther);
-                    return null;
-                }
-                TeleportPlayerTo(player, newPos);
-                SetCooldown(skillPoints, time, playerCooldowns, HRK.Blinkarrow);
-                return true;
-            }
-            if (!rpgInfo.Preferences.UseBlinkArrow) return null;
-            ChatMessage(player, HMK.BlinkedRecently, TimeLeft(availableAt, time));
-            if (rpgInfo.Preferences.AutoToggleBlinkArrow)
-                rpgInfo.Preferences.UseBlinkArrow = false;
-            return null;
+            return;
         }
 
         void OnEntityKill(BaseNetworkable networkable)
@@ -215,10 +202,10 @@ namespace Oxide.Plugins
             }
         }
 
-        void OnEntityDeath(BaseCombatEntity entity, HitInfo hitInfo)
+        void OnPlayerDie(BasePlayer player, HitInfo info)
         {
-            var player = entity as BasePlayer;
-            if (player == null) return;
+            if (player.displayName == null) return;
+            if (player.userID < 2147483647) return;
             if (EventManager != null && (bool)EventManager.CallHook("isPlaying", player)) return;
             FindRpgInfo(player).Died(DeathReducer);
             ChatMessage(player, HMK.Died, DeathReducer);
@@ -241,44 +228,8 @@ namespace Oxide.Plugins
             return null;
         }
 
-        object OnItemCraftFinished(ItemCraftTask task, Item item)
-        {
-            if (task.amount > 0) return null;
-            if (task.blueprint != null && task.blueprint.name.Contains("(Clone)"))
-            {
-                var behaviours = task.blueprint.GetComponents<MonoBehaviour>();
-                foreach (var behaviour in behaviours)
-                {
-                    if (behaviour.name.Contains("(Clone)")) UnityEngine.Object.Destroy(behaviour);
-                }
-                task.blueprint = null;
-            }
-            /*var blueprints = UnityEngine.Object.FindObjectsOfType<ItemBlueprint>();
-            if (blueprints.Length > 0)
-            {
-                foreach (var blueprint in blueprints)
-                {
-                    var behaviours = blueprint.GetComponents<MonoBehaviour>();
-                    foreach (var behaviour in behaviours)
-                    {
-                        if (behaviour.name.Contains("(Clone)")) UnityEngine.Object.Destroy(behaviour);
-                    }
-                }
-            }
-            var items = UnityEngine.Object.FindObjectsOfType<ItemDefinition>();
-            if (items.Length > 0)
-            {
-                foreach (var itemDef in items)
-                {
-                    var behaviours = itemDef.GetComponents<MonoBehaviour>();
-                    foreach (var behaviour in behaviours)
-                    {
-                        if (behaviour.name.Contains("(Clone)")) UnityEngine.Object.Destroy(behaviour);
-                    }
-                }
-            }*/
-            return null;
-        }
+
+
 
         void OnDispenserGather(ResourceDispenser dispenser, BaseEntity entity, Item item)
         {
@@ -307,24 +258,8 @@ namespace Oxide.Plugins
             if (rpgInfo.Skills.TryGetValue(skillType, out skillPoints))
                 item.amount = GatherModifierInt(skillPoints, skillType, item.amount);
             ExpGain(rpgInfo, (int)Math.Ceiling(item.amount * ExpRateTable[gatherType]), player);
-        }
-
-        void OnQuarryGather(MiningQuarry quarry, Item item)
-        {
-            if (quarry == null) return;
-            var instanceId = EntityId(quarry);
-            ulong playerQuarry;
-            if (!Data.Quarries.TryGetValue(instanceId, out playerQuarry))
-                return;
-            var player = FindPlayer(playerQuarry);
-            if (player == null) return;
-            var rpgInfo = FindRpgInfo(player);
-            if (rpgInfo == null)
-                return;
-            int skillPoints;
-            if (rpgInfo.Skills.TryGetValue(HRK.Miner, out skillPoints))
-                item.amount = GatherModifierInt(skillPoints, HRK.Miner, item.amount);
-            ExpGain(rpgInfo, (int)Math.Ceiling(item.amount * ExpRateTable[ResourceDispenser.GatherType.Ore]), player);
+            //if (Economics == null) return;
+            //Economics.CallHook("Deposit", player.UserIDString, 8);
         }
 
         void OnCollectiblePickup(Item item, BasePlayer player)
@@ -397,16 +332,45 @@ namespace Oxide.Plugins
             NextTick(() =>
             {
                 if (buildingBlock.grade != grade) return;
-                var items = buildingBlock.blockDefinition.grades[(int) grade].costToBuild;
+                var items = buildingBlock.blockDefinition.grades[(int)grade].costToBuild;
                 var total = 0;
                 foreach (var item in items)
-                    total += (int) item.amount;
-                var experience = (int) Math.Ceiling(UpgradeBuildingTable[grade]*total);
+                    total += (int)item.amount;
+                var experience = (int)Math.Ceiling(UpgradeBuildingTable[grade] * total);
                 ExpGain(FindRpgInfo(player), experience, player);
             });
             return null;
         }
 
+
+        object OnDispenserBonus(ResourceDispenser dispenser, BasePlayer player, Item item)
+        {
+            var rpgInfo = FindRpgInfo(player);
+            if (rpgInfo == null) return null;
+            var gatherType = dispenser.gatherType;
+            HRK skillType;
+            switch (gatherType)
+            {
+                case ResourceDispenser.GatherType.Tree:
+                    skillType = HRK.Lumberjack;
+                    break;
+                case ResourceDispenser.GatherType.Ore:
+                    skillType = HRK.Miner;
+                    break;
+                case ResourceDispenser.GatherType.Flesh:
+                    skillType = HRK.Hunter;
+                    break;
+                default:
+                    ExpGain(rpgInfo, item.amount, player);
+                    return null;
+            }
+
+            int skillPoints;
+            if (rpgInfo.Skills.TryGetValue(skillType, out skillPoints))
+                item.amount = GatherModifierInt(skillPoints, skillType, item.amount);
+            ExpGain(rpgInfo, (int)Math.Ceiling(item.amount * ExpRateTable[gatherType]), player);
+            return null;
+        }
         void OnPlayerDisconnected(BasePlayer player)
         {
             GUIInfo.Remove(player.userID);
@@ -449,6 +413,8 @@ namespace Oxide.Plugins
                 ChatMessage(attacker, HMK.TargetDodged);
                 return true;
             }
+            if (player.displayName == null) return false;
+            if (player.userID < 700000000) return false;
             hitInfo.damageTypes.ScaleAll(1 - rpgInfo.GetBlock());
             return false;
         }
@@ -481,7 +447,7 @@ namespace Oxide.Plugins
             HandleChatCommand(player, args);
         }
 
-        [ChatCommand("hgui")]
+        [ChatCommand("hg")]
         void cmdHuntGui(BasePlayer player, string command, string[] args)
         {
             if (Trainer.Length > 0 && !player.IsAdmin) return;
@@ -530,10 +496,12 @@ namespace Oxide.Plugins
             if (!IsAdmin(arg) || !arg.HasArgs()) return;
             var player = arg.Player();
             int desiredLevel;
-            if (arg.HasArgs(2)) {
+            if (arg.HasArgs(2))
+            {
                 player = FindPlayer(arg.GetString(0));
                 desiredLevel = arg.GetInt(1);
-            } else
+            }
+            else
                 desiredLevel = arg.GetInt(0);
             if (player == null)
             {
@@ -681,9 +649,6 @@ namespace Oxide.Plugins
                 case "lvlup":
                     LevelUpChatHandler(player, args, rpgInfo);
                     return;
-                /*case "research":
-                    ResearchItemHandler(player, args, rpgInfo);
-                    return;*/
                 case "xp":
                     ChatMessage(player, XPProgression(player, rpgInfo));
                     return;
@@ -991,7 +956,7 @@ namespace Oxide.Plugins
                     case HRK.Str:
                         if (rpgInfo.AddStat(statType, points))
                         {
-                            if (!npc) ChatMessage(player, (HMK)Enum.Parse(typeof(HMK), statType+"Color", true), $"+{points}");
+                            if (!npc) ChatMessage(player, (HMK)Enum.Parse(typeof(HMK), statType + "Color", true), $"+{points}");
                         }
                         else
                             ChatMessage(player, HMK.NotEnoughPoints, rpgInfo.GetStatPointsCost(statType, points));
@@ -1039,84 +1004,6 @@ namespace Oxide.Plugins
                 ChatMessage(callerPlayer, HMK.PlayerLevelUp, player.displayName, desiredLevel);
         }
 
-        /*private bool ResearchItemHandler(BasePlayer player, string[] args, RPGInfo rpgInfo)
-        {
-            var commandArgs = args?.Length - 1 ?? 0;
-            if (commandArgs != 1)
-            {
-                ChatMessage(player, HMK.InvalidCommand, args[0]);
-                return false;
-            }
-            int skillPoints;
-            if (!rpgInfo.Skills.TryGetValue(HRK.Researcher, out skillPoints))
-            {
-                ChatMessage(player, HMK.NotLearnedSkill);
-                return false;
-            }
-            var argItem = args[1].ToLower();
-            string itemname;
-            if (!itemShortname.TryGetValue(argItem, out itemname))
-                itemname = argItem;
-            ItemInfo itemInfo;
-            if (!ItemTable.TryGetValue(itemname, out itemInfo))
-            {
-                ChatMessage(player, HMK.NotFoundItem, argItem);
-                return false;
-            }
-            if (!itemInfo.CanResearch)
-            {
-                ChatMessage(player, HMK.ResearchBlocked, itemInfo.DisplayName);
-                return false;
-            }
-            var definition = ItemManager.FindItemDefinition(itemname);
-            if (definition == null)
-            {
-                ChatMessage(player, HMK.NotFoundItem, itemInfo.DisplayName);
-                return false;
-            }
-            var hasItem = player.inventory.FindItemID(itemname);
-            if (hasItem == null)
-            {
-                ChatMessage(player, HMK.ResearchItem);
-                return false;
-            }
-            int requiredSkillPoints;
-            if (!ResearchTable.TryGetValue(itemInfo.ItemCategory, out requiredSkillPoints))
-            {
-                ChatMessage(player, HMK.ResearchType);
-                return false;
-            }
-            if (skillPoints < requiredSkillPoints)
-            {
-                ChatMessage(player, HMK.ResearchSkill, requiredSkillPoints);
-                return false;
-            }
-
-            var time = Time.realtimeSinceStartup;
-            var playerCooldowns = PlayerCooldowns(player.userID);
-            float availableAt = 0;
-            if (IsSkillReady(playerCooldowns, ref availableAt, time, HRK.Researcher))
-            {
-                if (Random.Range(0f, 1f) > SkillTable[HRK.Researcher].Modifiers[HRK.Chance].Args[0])
-                {
-                    ChatMessage(player, HMK.ResearchSuccess, itemInfo.DisplayName);
-                    player.inventory.GiveItem(ItemManager.Create(definition, 1, true), player.inventory.containerMain);
-                    NoticeArea.ItemPickUp(definition, 1, true);
-                }
-                else
-                {
-                    ChatMessage(player, HMK.ResearchFail, itemInfo.DisplayName);
-                    player.inventory.Take(new List<Item> { player.inventory.FindItemID(definition.itemid) }, definition.itemid, 1);
-                }
-                SetCooldown(skillPoints, time, playerCooldowns, HRK.Researcher);
-            }
-            else
-            {
-                ChatMessage(player, HMK.ResearchReuse, TimeLeft(availableAt, time));
-            }
-            return true;
-        }*/
-
         private void ChangePlayerXPMessagePreference(BasePlayer player, string[] args, RPGInfo rpgInfo)
         {
             var commandArgs = args.Length - 1;
@@ -1152,9 +1039,9 @@ namespace Oxide.Plugins
             //this will only be called if there is not a config file, or it needs updating
             Config[HK.ConfigVersion] = Version;
             Config[HK.DataVersion] = DataVersion;
-            Config[HK.AdminReset] = GetConfig(HK.AdminReset, true);
+            Config[HK.AdminReset] = GetConfig(HK.AdminReset, false);
             Config[HK.ShowHud] = GetConfig(HK.ShowHud, true);
-            Config[HK.ShowProfile] = GetConfig(HK.ShowProfile, true);
+            Config[HK.ShowProfile] = GetConfig(HK.ShowProfile, false);
             Config[HK.DefaultHud] = GetConfig(HK.DefaultHud, 2);
             Config[HK.NightXP] = GetConfig(HK.NightXP, 2);
             Config[HK.DeleteProfileAfterOfflineDays] = GetConfig(HK.DeleteProfileAfterOfflineDays, 0);
@@ -1191,13 +1078,7 @@ namespace Oxide.Plugins
                         "To see you player profile, type \"/hunt profile\"",
                         "To see you current xp, type \"/hunt xp\"",
                         "To see how to change you profile preferences, type \"/hunt profilepreferences\"",
-                        "To see you current health, type \"/hunt health\"",
-                        "To see the skill list type \"/hunt skilllist\"",
-                        "To see info about a specific skill type \"/hunt skill <skillname>\"",
-                        "To spend your available stats points, type \"/hunt statset <stats> <points> \". Ex: /hunt statset agi 3",
-                        "To spend your available skill points, type \"/hunt skillset <skillname> <points> \". Ex: /hunt skillset lumberjack 1",
-                        "To reset your stat points, type \"/hunt statreset\". This will also reset your skills.",
-                        "To reset your skill points, type \"/hunt skillreset\""
+                        "To use an easy to use GUI to spend point type \"/hg\""
                     })
                 },
                 {
@@ -1210,7 +1091,6 @@ namespace Oxide.Plugins
                         "You can set multiple stats at a time like this \"/h sts agi 30 str 45\".",
                         "\"/hunt skillset\" = \"/h sks\"",
                         "You can set multiple skillpoints at a time like this \"/h sks lumberjack 3 miner 2\".",
-                        "\"/hunt health\" = \"/h h\""
                     })
                 },
                 {
@@ -1228,9 +1108,10 @@ namespace Oxide.Plugins
                     {
                         "=================================================",
                         "The Hunt RPG system in development.",
+                        "Currently maintained by Default.",
                         "It is consisted of levels, stats atributes, skills and later on specializations.",
                         "Currently there are 3 attributes, each of then give you and specific enhancement.",
-                        "Strength gives you more health, it will not be displayed in the Health Bar, but it is considered for healing and getting hurt.",
+                        "Strength reduces the damage you take, and allows for more ammo in magazines.",
                         "Agillity gives you dodge chance",
                         "Intelligence decreases your items crafting time",
                         "Right now you can level up by gathering resources.",
@@ -1281,8 +1162,8 @@ namespace Oxide.Plugins
                 {HMK.Off, "Off"},
                 {HMK.XpMessage, "XP will be shown at every {0:P} change"},
                 {HMK.AvailableSkills, "Available Skills:"},
-                {HMK.Dodged, "Dodged!"},
-                {HMK.TargetDodged, "Target Dodged!"},
+                {HMK.Dodged, "You <color=red>dodged</color> an attack!"},
+                {HMK.TargetDodged, "Your target <color=red>Dodged</color>"},
                 {HMK.LevelUp, "<color=yellow>Level Up! You are now level {0}</color>"},
                 {HMK.CurrentXp, "Current XP: {0:P}{1}"},
                 {HMK.NightXp, " Bonus Night Exp On"},
@@ -1312,14 +1193,15 @@ namespace Oxide.Plugins
                 {HMK.SkillResetPlayer, "{0} skills reset."},
                 {HMK.ProfileMessage, "Auto show profile is now: {0}"},
                 {HMK.NeedNpc, "You cannot teach yourself. Go to the next trainer!"},
-                {HMK.GenerateXp, "Generate XP table..."},
+                {HMK.GenerateXp, "Generating XP table..."},
                 {HMK.SkillsHeader, "========<color=purple>Skills</color>========"},
                 {HMK.ProfileHeader, "========{0}========"},
                 {
                     HMK.Loaded, string.Join("\n", new[]
                     {
                         "<color=lightblue>Hunt</color>: RPG Loaded!",
-                        "<color=lightblue>Hunt</color>: To see the Hunt RPG help type \"/hunt\" or \"/h\""
+                        "<color=lightblue>Hunt</color>: To see the Hunt RPG help type \"/hunt\" or \"/h\"",
+                        "<color=lightblue>Hung</color>: TO open the GUI type \"/hg\""
                     })
                 },
                 {HMK.StatusLoad, "{0} profiles, {1} furnaces, {2} quarries loaded"},
@@ -1343,8 +1225,8 @@ namespace Oxide.Plugins
                 {HMK.ButtonClose, "Close"},
                 {HMK.ButtonResetSkills, "Reset Skills"},
                 {HMK.ButtonResetStats, "Reset Stats"},
-                {HMK.AgiDesc, "Agillity gives you dodge chance"},
-                {HMK.StrDesc, "Strength gives you more health, it will not be displayed in the Health Bar, but it is considered for healing and getting hurt."},
+                {HMK.AgiDesc, "Agillity gives you the chance to <colour=red>dodge</color> an attack!"},
+                {HMK.StrDesc, "Strength gives you the ability to hold more ammunition in guns. More on the way!"},
                 {HMK.IntDesc, "Intelligence decreases your items crafting time"}
             };
             lang.RegisterMessages(messagesConfig.ToDictionary(m => m.Key.ToString(), m => m.Value), this);
@@ -1414,6 +1296,7 @@ namespace Oxide.Plugins
                 SkillTable[HRK.Tamer].Enabled = false;
             }
             SkillTable[HRK.Researcher].Enabled = false;
+            if (DeleteProfileAfter <= 0) return;
             var now = Facepunch.Math.Epoch.Current;
             var delTime = now - 86400 * DeleteProfileAfter;
             var toRemove = new List<ulong>();
@@ -1424,7 +1307,7 @@ namespace Oxide.Plugins
                     profile.Value.LastSeen = now;
                     continue;
                 }
-                if (DeleteProfileAfter > 0 && profile.Value.LastSeen < delTime || string.IsNullOrEmpty(profile.Value.SteamName) && profile.Value.Level <= 0)
+                if (profile.Value.LastSeen < delTime)
                 {
                     toRemove.Add(profile.Key);
                     var data = Data.Furnaces.Where(pair => pair.Value == profile.Key).Select(pair => pair.Key).ToArray();
@@ -1757,12 +1640,12 @@ namespace Oxide.Plugins
             {
                 if (points)
                 {
-                    guiInfo.LastHudFirst = elements.Add(CreatePanel("0 0.51", "1 1", "0.16 0.16 0.16 0.8"), guiInfo.LastHud);
+                    guiInfo.LastHudFirst = elements.Add(CreatePanel("0.0 0.51", "1 1", "0.16 0.16 0.16 0.8"), guiInfo.LastHud);
                     elements.Add(CreateLabel($"{_(HMK.StatPoints, player, rpgInfo.StatsPoints)} {_(HMK.SkillPoints, player, rpgInfo.SkillPoints)}", 1, 1, TextAnchor.MiddleCenter, 15, "0", "1", "1.0 1.0 1.0 0.3"), guiInfo.LastHudFirst);
                 }
                 guiInfo.LastHudSecond = elements.Add(CreatePanel("0 0", "1 0.45", "0.16 0.16 0.16 0.8"), guiInfo.LastHud);
                 elements.Add(CreateLabel($"{rpgInfo.Level}", 1, 1, TextAnchor.MiddleCenter, 15, "0", "0.19", "1.0 1.0 1.0 0.3"), guiInfo.LastHudSecond);
-                elements.Add(CreatePanel("0.2 0.1", $"{.2f + .77f*CurrentPercent(rpgInfo)} 0.88", "0.8392156862745098 0.6823529411764706 0 0.5"), guiInfo.LastHudSecond);
+                elements.Add(CreatePanel("0.2 0.1", $"{.2f + .77f * CurrentPercent(rpgInfo)} 0.88", "0.8392156862745098 0.6823529411764706 0 0.5"), guiInfo.LastHudSecond);
                 elements.Add(CreateLabel($"{rpgInfo.Experience}/{rpgInfo.RequiredExperience()}", 1, 1, TextAnchor.MiddleCenter, 15, "0.2", "1", "1.0 1.0 1.0 0.3"), guiInfo.LastHudSecond);
             }
             else
@@ -1851,6 +1734,7 @@ namespace Oxide.Plugins
 
         private void UpdateMagazinPlayer(BasePlayer player, RPGInfo rpgInfo)
         {
+            if (MagazinBoost == true) return;
             foreach (var item in player.inventory.AllItems())
                 UpdateMagazin(item, rpgInfo);
         }
@@ -1860,6 +1744,7 @@ namespace Oxide.Plugins
             foreach (var item in player.inventory.AllItems())
             {
                 UpdateGather(item, rpgInfo);
+                if (MagazinBoost == true) return;
                 UpdateMagazin(item, rpgInfo);
             }
         }
@@ -1898,9 +1783,10 @@ namespace Oxide.Plugins
 
         private void UpdateMagazin(Item item, RPGInfo rpgInfo)
         {
+            if (MagazinBoost == true) return;
             var projectile = item.GetHeldEntity() as BaseProjectile;
             if (projectile == null) return;
-            var capacity = (int)(projectile.primaryMagazine.definition.builtInSize * (1f + rpgInfo.Strength / (RPGInfo.XPTable.Length * 4f)));
+            var capacity = (int)(projectile.primaryMagazine.definition.builtInSize * (1f + rpgInfo.Strength / (RPGInfo.XPTable.Length * 2.0f)));
             if (projectile.primaryMagazine.capacity == capacity) return;
             projectile.primaryMagazine.contents += capacity - projectile.primaryMagazine.capacity;
             projectile.primaryMagazine.capacity = capacity;
@@ -1931,14 +1817,14 @@ namespace Oxide.Plugins
 
         private int GatherModifierInt(int skillpoints, HRK skillType, int value)
         {
-            return (int) Math.Ceiling(GatherModifier(skillpoints, skillType) * value);
+            return (int)Math.Ceiling(GatherModifier(skillpoints, skillType) * value);
         }
 
         private float CooldownModifier(int skillpoints, HRK skillKey, float currenttime)
         {
             var modifier = SkillTable[skillKey].Modifiers[HRK.Cooldown];
-            var baseCooldown = modifier.Args[0]*60f;
-            var timeToReduce = (skillpoints - 1f)*modifier.Args[1]*60f;
+            var baseCooldown = modifier.Args[0] * 60f;
+            var timeToReduce = (skillpoints - 1f) * modifier.Args[1] * 60f;
             var finalCooldown = baseCooldown - timeToReduce;
             return finalCooldown + currenttime;
         }
@@ -1947,7 +1833,7 @@ namespace Oxide.Plugins
         #region Message
         private string _(HMK key, params object[] args)
         {
-            return _(key, (string) null, args);
+            return _(key, (string)null, args);
         }
 
         private string _(HMK key, BasePlayer player, params object[] args)
@@ -1987,6 +1873,8 @@ namespace Oxide.Plugins
                 config.LastSeen = Facepunch.Math.Epoch.Current;
                 return config;
             }
+            if (player.displayName == null) return null;
+            if (player.userID < 70000000000) return null;
             Data.Profiles[userId] = config = new RPGInfo(player.displayName, DefaultHud, ShowProfile);
             config.SetUserId(userId);
             //SaveRPG();
@@ -2154,7 +2042,7 @@ namespace Oxide.Plugins
             public IgnoreJsonPropertyResolver()
             {
                 PropertyMappings = new Dictionary<string, string>();
-                var types = new[] {typeof (RPGInfo), typeof (ProfilePreferences)};
+                var types = new[] { typeof(RPGInfo), typeof(ProfilePreferences) };
                 foreach (var type in types)
                 {
                     var fields = type.GetFields();
@@ -2178,7 +2066,7 @@ namespace Oxide.Plugins
                 }
             }
 
-            protected override string ResolvePropertyName(string propertyName)
+            protected string ResolvePropertyName(string propertyName)
             {
                 string resolvedName;
                 return PropertyMappings.TryGetValue(propertyName, out resolvedName) ? resolvedName : base.ResolvePropertyName(propertyName);
@@ -2198,10 +2086,10 @@ namespace Hunt.RPG
             xpTable.Add(0, baseExp);
             for (var i = 1; i < maxLevel; i++)
             {
-                if (i%levelModule == 0)
+                if (i % levelModule == 0)
                     levelMultiplier -= moduleReducer;
                 if (levelMultiplier < 1.01f) levelMultiplier = 1.01f;
-                currentLevel = (long) (currentLevel*levelMultiplier);
+                currentLevel = (long)(currentLevel * levelMultiplier);
                 xpTable.Add(i, currentLevel);
             }
             return xpTable;
@@ -2225,30 +2113,35 @@ namespace Hunt.RPG
             skillTable.Add(HRK.Gatherer, gatherer);
             var researcher = new Skill(HRK.Researcher, HMK.ResearcherDesc, 30, 5)
             {
-                SkillPointsPerLevel = 7, Usage = HMK.ResearcherUsage, Enabled = false
+                SkillPointsPerLevel = 7,
+                Usage = HMK.ResearcherUsage,
+                Enabled = false
             };
-            researcher.AddRequiredStat("int", researcher.RequiredLevel*3);
-            researcher.AddModifier(HRK.Cooldown, new Modifier( /*HRK.Cooldown, */new[] {10f, 2f}));
-            researcher.AddModifier(HRK.Chance, new Modifier( /*HRK.Chance, */new[] {.6f}));
+            researcher.AddRequiredStat("int", researcher.RequiredLevel * 3);
+            researcher.AddModifier(HRK.Cooldown, new Modifier( /*HRK.Cooldown, */new[] { 10f, 2f }));
+            researcher.AddModifier(HRK.Chance, new Modifier( /*HRK.Chance, */new[] { .6f }));
             skillTable.Add(HRK.Researcher, researcher);
             var blacksmith = new Skill(HRK.Blacksmith, HMK.BlacksmithDesc, 30, 5)
             {
                 SkillPointsPerLevel = 7
             };
-            blacksmith.AddRequiredStat("str", (int) Math.Floor(blacksmith.RequiredLevel*2.5f));
-            blacksmith.AddModifier(HRK.Chance, new Modifier( /*HRK.Chance, */new[] {.15f}));
-            blacksmith.AddModifier(HRK.RessRate, new Modifier( /*HRK.RessRate, */new[] {.5f}));
+            blacksmith.AddRequiredStat("str", (int)Math.Floor(blacksmith.RequiredLevel * 2.5f));
+            blacksmith.AddModifier(HRK.Chance, new Modifier( /*HRK.Chance, */new[] { .15f }));
+            blacksmith.AddModifier(HRK.RessRate, new Modifier( /*HRK.RessRate, */new[] { .5f }));
             skillTable.Add(HRK.Blacksmith, blacksmith);
             var blinkarrow = new Skill(HRK.Blinkarrow, HMK.BlinkarrowDesc, 150, 5)
             {
-                Usage = HMK.BlinkarrowUsage, SkillPointsPerLevel = 10, Enabled = false
+                Usage = HMK.BlinkarrowUsage,
+                SkillPointsPerLevel = 10,
+                Enabled = false
             };
-            blinkarrow.AddModifier(HRK.Cooldown, new Modifier( /*HRK.Cooldown, */new[] {9f, 2f}));
-            blinkarrow.AddRequiredStat("agi", blinkarrow.RequiredLevel*2);
+            blinkarrow.AddModifier(HRK.Cooldown, new Modifier( /*HRK.Cooldown, */new[] { 9f, 2f }));
+            blinkarrow.AddRequiredStat("agi", blinkarrow.RequiredLevel * 2);
             skillTable.Add(HRK.Blinkarrow, blinkarrow);
             var tamer = new Skill(HRK.Tamer, HMK.TamerDesc, 50, 6)
             {
-                SkillPointsPerLevel = 5, Usage = HMK.TamerUsage
+                SkillPointsPerLevel = 5,
+                Usage = HMK.TamerUsage
             };
             skillTable.Add(HRK.Tamer, tamer);
             return skillTable;
@@ -2303,10 +2196,10 @@ namespace Hunt.RPG
             return new Dictionary<BuildingGrade.Enum, float>
             {
                 {BuildingGrade.Enum.Twigs, 1f},
-                {BuildingGrade.Enum.Wood, 1.5f},
-                {BuildingGrade.Enum.Stone, 3f},
-                {BuildingGrade.Enum.Metal, 10f},
-                {BuildingGrade.Enum.TopTier, 3f}
+                {BuildingGrade.Enum.Wood, 1f},
+                {BuildingGrade.Enum.Stone, 1f},
+                {BuildingGrade.Enum.Metal, 1f},
+                {BuildingGrade.Enum.TopTier, 1f}
             };
         }
 
@@ -2336,7 +2229,7 @@ namespace Hunt.RPG
             return new Dictionary<ResourceDispenser.GatherType, float>
             {
                 {ResourceDispenser.GatherType.Tree, .5f},
-                {ResourceDispenser.GatherType.Ore, .33f},
+                {ResourceDispenser.GatherType.Ore, .5f},
                 {ResourceDispenser.GatherType.Flesh, 5f}
             };
         }
@@ -2348,8 +2241,8 @@ namespace Hunt.RPG
                 "furnace",
                 "furnace.large",
                 "refinery_small_deployed",
-                "mining.pumpjack",
-                "mining_quarry"
+                "campfire",
+                "bbq"
             };
         }
     }
@@ -2381,7 +2274,7 @@ namespace Hunt.RPG
         {
             ShowXPMessagePercent = .25f;
             ShowProfile = showProfile;
-            ShowCraftMessage = true;
+            ShowCraftMessage = false;
             ShowHud = defaultHud;
             UseBlinkArrow = true;
             AutoToggleBlinkArrow = true;
@@ -2509,7 +2402,7 @@ namespace Hunt.RPG
 
         public void Died(float percent)
         {
-            Experience -= (long) (Experience*percent);
+            Experience -= (long)(Experience * percent);
             if (Experience < 0)
                 Experience = 0;
         }
@@ -2559,7 +2452,7 @@ namespace Hunt.RPG
         public void ResetStats()
         {
             ResetSkills();
-            StatsPoints = Level*StatPointsPerLevel;
+            StatsPoints = Level * StatPointsPerLevel;
             Agility = Intelligence = Strength = Level;
         }
 
@@ -2573,7 +2466,7 @@ namespace Hunt.RPG
                     Perm.RevokeUserPermission(userId.ToString(), TameTable[j]);
             }
             Skills.Clear();
-            SkillPoints = Level*SkillPointsPerLevel;
+            SkillPoints = Level * SkillPointsPerLevel;
         }
 
         public int AddSkill(Skill skill, int level, out HMK reason, Plugin pets = null)
@@ -2669,7 +2562,7 @@ namespace Hunt.RPG
         {
             if (evasionCache >= 0) return evasionCache;
             var args = MaxStatsTable[HRK.agi_evasion_percent_gain].Args;
-            evasionCache = Mathf.Clamp((float) (Math.Pow(args[0], Agility) - 1), 0, args[1]);
+            evasionCache = Mathf.Clamp((float)(Math.Pow(args[0], Agility) - 1), 0, args[1]);
             return evasionCache;
         }
 
@@ -2677,7 +2570,7 @@ namespace Hunt.RPG
         {
             if (blockCache >= 0) return blockCache;
             var args = MaxStatsTable[HRK.str_block_percent_gain].Args;
-            blockCache = Mathf.Clamp((float) (Math.Pow(args[0], Strength) - 1), 0, args[1]);
+            blockCache = Mathf.Clamp((float)(Math.Pow(args[0], Strength) - 1), 0, args[1]);
             return blockCache;
         }
 
@@ -2685,7 +2578,7 @@ namespace Hunt.RPG
         {
             if (craftCache >= 0) return craftCache;
             var args = MaxStatsTable[HRK.int_crafting_reducer_percent].Args;
-            craftCache = Mathf.Clamp((float) (Math.Pow(args[0], Intelligence) - 1), 0, args[1]);
+            craftCache = Mathf.Clamp((float)(Math.Pow(args[0], Intelligence) - 1), 0, args[1]);
             return craftCache;
         }
 
@@ -2909,13 +2802,13 @@ namespace Hunt.RPG.Keys
         public const int SkillPointsPerLevel = 2;
         public const int StatPointsPerLevel = 3;
         public const int BaseXP = 383;
-        public const float LevelMultiplier = 1.105f;
+        public const float LevelMultiplier = 1.088f;
         public const int LevelModule = 10;
         public const float ModuleReducer = .0055f;
         public const float DeathReducer = .05f;
     }
 
-    [JsonConverter(typeof (StringEnumConverter))]
+    [JsonConverter(typeof(StringEnumConverter))]
     public enum HMK
     {
         None,
@@ -3029,7 +2922,7 @@ namespace Hunt.RPG.Keys
         public const string CanTameHorse = "canhorse";
     }
 
-    [JsonConverter(typeof (StringEnumConverter))]
+    [JsonConverter(typeof(StringEnumConverter))]
     public enum HRK
     {
         Tamer,
